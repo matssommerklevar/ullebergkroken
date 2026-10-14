@@ -141,6 +141,20 @@
       <div id="pending" style="margin-top:10px"></div>
     </section>
 
+    <section id="fcSection" hidden>
+      <h2>Forventet resten av avtalen <small>basert på innmålt volum og tømmerpriser</small></h2>
+      <div class="scroll"><table id="fcTable"></table></div>
+      <div class="grid" style="margin-top:14px;align-items:start">
+        <div class="rows" id="fcRows"></div>
+        <div>
+          <div class="hint" style="margin:0">Sett av til skatt av forventet inntekt</div>
+          <div class="big" id="fcSkatt">–</div>
+          <div class="hint" id="fcSub"></div>
+        </div>
+      </div>
+      <p class="hint" id="fcNote"></p>
+    </section>
+
     <section id="archive" hidden>
       <h2>Dokumentarkiv <small>fra Google Disk</small></h2>
       <div class="toolbar" style="margin-bottom:10px">
@@ -295,7 +309,10 @@ function parseAvregning(lines, fileName) {
   const utg = nums(L(/^\s*Sum utgifter/));
   const sv = nums(L(/^\s*Sum virkesavregning/));
   const utgLines = section(lines, /^\s*Utgifter\b/, /^\s*Sum utgifter/).filter(l => nums(l).length >= 3)
-    .map(l => { const n = nums(l); return { navn: label(l), belop: n[n.length-3], mva: n[n.length-2], sum: n[n.length-1] }; });
+    .map(l => { const n = nums(l); return { navn: label(l), grunnlag: n.length >= 5 ? n[0] : null, sats: n.length >= 5 ? n[1] : null, belop: n[n.length-3], mva: n[n.length-2], sum: n[n.length-1] }; });
+  const sortimenter = section(lines, /Detaljer virkessortimenter/i, /^\s*Sum\b/).map(l => {
+      const m = l.match(/^\s*(\d{3})\s+(.+?)\s{2,}(K-[\w-]+)?/); const n = nums(l);
+      return m && n.length >= 3 ? { kode: m[1], navn: m[2].trim(), volum: n[n.length-3], pris: n[n.length-2], belop: n[n.length-1] } : null; }).filter(Boolean);
   const trekk = section(lines, /^\s*Tillegg\/trekk/, /^\s*Sum tillegg\/trekk/).filter(l => nums(l).length >= 3)
     .map(l => { const n = nums(l); return { navn: label(l), grunnlag: n[0], sats: n.length >= 5 ? n[1] : null, belop: n[n.length-3], mva: n[n.length-2], sum: n[n.length-1] }; });
   const sf = trekk.filter(x => /skogfond/i.test(x.navn));
@@ -313,11 +330,12 @@ function parseAvregning(lines, fileName) {
     periode: after(t, /Oppgjørsperiode:\s*([^\n]+?)(?:\s{2,}|$)/m),
     volum: inn[0] || 0, innEks: inn[1] || 0, innMva: inn[2] || 0,
     utgEks: Math.abs(utg[0] || sumB(utgLines)), utgMva: Math.abs(utg[1] || sumM(utgLines)),
-    utgLinjer: utgLines.map(x => ({ navn: x.navn, belop: x.belop })),
+    utgLinjer: utgLines.map(x => ({ navn: x.navn, grunnlag: x.grunnlag, belop: x.belop, mva: x.mva })), sortimenter,
     skogfond: Math.abs(sumB(sf)), skogfondSats: sf[0] && sf[0].sats !== null ? Math.abs(sf[0].sats) : null,
     trekkEks: Math.abs(sumB(andreTrekk)), trekkMva: Math.abs(sumM(andreTrekk)),
-    trekkLinjer: andreTrekk.map(x => ({ navn: x.navn, belop: x.belop })),
+    trekkLinjer: andreTrekk.map(x => ({ navn: x.navn, grunnlag: x.grunnlag, belop: x.belop, mva: x.mva })),
     nettoEks: sv[0] || 0, nettoMva: sv[1] || 0, utbetalt: sv[2] || 0,
+    maaledokNr: section(lines, /Måledokumenter som inngår/i, /Akkumulerte|Side \d+ av/i).join(' ').match(/\b\d{6,10}\b/g) || [],
     med: true
   };
   const kontroll = r.innEks - r.utgEks - r.skogfond - r.trekkEks;
@@ -337,6 +355,8 @@ function parseMaaledok(lines, fileName) {
     avtale: after(t, /Avtalenr[.:]?\s*(\d+)/),
     kjoper: after(t, /Videresolgt til:\s*\d*\s*([^\n]+?)(?:\s{2,}|$)/m),
     volum: sums[0] || 0, avtaleTotal: sums.length > 1 ? sums[sums.length-1] : null,
+    navn: Object.fromEntries(section(lines, /^\s*Sortiment\b/, /^\s*Sum inkl/).map(l => l.match(/^\s*(\d{3})\s+(.+?)(?:\s{2,}|$)/)).filter(Boolean).map(m => [m[1], m[2].trim()])),
+    avtaleSort: Object.fromEntries(section(lines, /Totalt innmålt kvantum/i, /^\s*Sum inkl/).map(l => { const m = l.match(/^\s*(\d{3})\b/); const n = nums(l); return m && n.length ? [m[1], n[n.length-1]] : null; }).filter(Boolean)),
     ok: !!(nr && sums.length)
   };
 }
@@ -380,6 +400,7 @@ async function handleFiles(files) {
 
 /* ---------- Google Disk ---------- */
 const CONFIG = { googleClientId: '1709168763-kl52fd3ibkmmj09qnob47hdo8alcbvn5.apps.googleusercontent.com' };   // fylles inn når klient-ID-en er klar
+const PARSER_V = 3;
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 let gToken = null, gTokenClient = null, gBusy = false;
 const clientId = () => (CONFIG.googleClientId || S.gClientId || '').trim();
@@ -434,13 +455,13 @@ async function gSync() {
     S.maaledok = S.maaledok.filter(m => !m.driveId || ids.has(m.driveId));
     S.driveSeen = S.driveSeen || {};
     Object.keys(S.driveSeen).forEach(id => { if (!ids.has(id)) delete S.driveSeen[id]; });
-    const todo = S.driveFiles.filter(f => f.pdf && S.driveSeen[f.id]?.modified !== f.modified);
+    const todo = S.driveFiles.filter(f => f.pdf && (S.driveSeen[f.id]?.modified !== f.modified || (S.driveSeen[f.id]?.v || 1) < PARSER_V));
     const msg = [];
     for (let i = 0; i < todo.length; i++) {
       const f = todo[i];
       gStatus(`Leser ${i + 1} av ${todo.length}: ${f.name}`);
       const r = await processPdf(f.name, await gApi('files/' + f.id, { alt: 'media', supportsAllDrives: true }, true), f);
-      S.driveSeen[f.id] = { modified: f.modified, kind: r.kind };
+      S.driveSeen[f.id] = { modified: f.modified, kind: r.kind, v: PARSER_V };
       if (r.kind !== 'annet') msg.push(r.msg);
     }
     S.driveSynced = new Date().toISOString();
@@ -470,6 +491,36 @@ function gLogin() {
     gTokenClient._cid = clientId();
   }
   gTokenClient.requestAccessToken();
+}
+
+function renderForecast() {
+  const c = compute(), T = c.ps;
+  $('fcSection').hidden = !T;
+  if (!T) return;
+  const tag = { avregning: '', egen: '<span class="tag">egen pris</span>', 'anslått': '<span class="tag warn">anslått</span>', mangler: '<span class="tag warn">mangler pris</span>', vrak: '' };
+  const vis = T.linjer.filter(l => l.inn > 0);
+  $('fcTable').innerHTML = `<tr><th>Sortiment</th><th class="n">Innmålt</th><th class="n">Avregnet</th><th class="n">Gjenstår m³</th><th class="n">Pris kr/m³</th><th class="n">Verdi</th></tr>` +
+    vis.map(l => `<tr><td>${esc(l.kode)} ${esc(l.navn)} ${tag[l.kilde] || ''}${T.avtaler.length > 1 ? '<br><span class="hint">avtale ' + esc(l.avtale) + '</span>' : ''}</td>
+      <td class="n">${fmt(l.inn, 1)}</td><td class="n">${fmt(l.avregnet, 1)}</td><td class="n"><strong>${fmt(l.rest, 1)}</strong></td>
+      <td class="n"><input data-pris="${esc(l.kode)}" value="${esc(S.priser && S.priser[l.kode] !== undefined ? S.priser[l.kode] : fmt(l.pris, 2))}" inputmode="decimal" style="width:90px;text-align:right;padding:4px 6px"></td>
+      <td class="n">${fmt(l.verdi)}</td></tr>`).join('') +
+    `<tr><td><strong>Sum</strong></td><td></td><td></td><td class="n"><strong>${fmt(T.vol, 1)}</strong></td><td></td><td class="n"><strong>${fmt(T.brutto)}</strong></td></tr>`;
+  const sfPct = T.avtaler.map(a => fmt(a.sfSats * 100, 0) + ' %').filter((v, i, arr) => arr.indexOf(v) === i).join(' / ');
+  $('fcRows').innerHTML = rows([
+    ['Tømmerverdi ekskl. mva', kr(T.brutto)],
+    ['Mva (25 %)', kr(T.bruttoMva)],
+    ['Drift, måling og avgifter inkl. mva', '−' + kr(T.kost + T.kostMva)],
+    ['Til skogfond (' + sfPct + ')', '−' + kr(T.skogfond)],
+    ['Forventet utbetalt', kr(T.utbetaling), 'sum'],
+  ]);
+  const grunnlag = c.kap ? T.grunnlagKap : T.grunnlagNaering;
+  const skatt = Math.max(0, grunnlag) * c.marg;
+  $('fcSkatt').textContent = kr(skatt);
+  $('fcSub').innerHTML = `${fmt(c.marg * 100, 1)} % av skattepliktig ${kr(grunnlag)}` + (c.kap ? '' : `<br>+ mva å betale: ${kr(T.bruttoMva - T.kostMva)}`) +
+    `<br>Fritt å bruke av utbetalingen: <strong>${kr(T.utbetaling - skatt - (c.kap ? 0 : T.bruttoMva - T.kostMva))}</strong>`;
+  $('fcNote').innerHTML = 'Gjenstående volum = siste måledokuments totaler per sortiment minus det som er avregnet. Priser hentes fra siste avregning og kan endres i tabellen. Kostnader per m³ og skogfondssats er hentet fra avregningen' +
+    (T.avtaler[0]?.ref ? ' ' + esc(T.avtaler[0].ref) : '') + '; engangsbeløp som oppstarts- og flyttekompensasjon er ikke tatt med.' +
+    (T.mangler.length ? ' <strong>Sortimenter uten pris i avregningene (' + T.mangler.map(l => l.kode).join(', ') + ') er anslått med massevirkepris – rett gjerne prisen.</strong>' : '');
 }
 
 function renderArchive() {
@@ -510,7 +561,8 @@ function compute() {
 
   // prognose for levert, ikke avregnet
   const prog = prognose();
-  const progNetto = S.inclProg && prog ? (kap ? prog.nettoInkl : prog.nettoEks) : 0;
+  const ps = prognoseSort();
+  const progNetto = !S.inclProg ? 0 : ps ? (kap ? ps.grunnlagKap : ps.grunnlagNaering) : prog ? (kap ? prog.nettoInkl : prog.nettoEks) : 0;
 
   const skogNetto = inn - utg - trekk - sf + mInn - mKost + sfSkattbar + progNetto;
   // Isolert marginalskatt på skogoverskuddet (øvrig inntekt antas å bruke opp fradragene)
@@ -521,31 +573,100 @@ function compute() {
   const rest = Math.max(0, skatt - num(S.betalt));
   const mva = kap ? 0 : sum('nettoMva');
   const utbetalt = sum('utbetalt');
-  return { R, kap, av, inn, utg, trekk, sf, mInn, mKost, sfSkattbar, prog, progNetto, skogNetto,
+  return { R, kap, av, inn, utg, trekk, sf, mInn, mKost, sfSkattbar, prog, ps, progNetto, skogNetto,
     del, skatt, rest, mva, utbetalt, marg: R.alm + trinnSats + (kap ? 0 : R.tNaering) };
 }
 
+const mdKey = nr => String(nr || '').split('-').pop().replace(/^0+/, '');
+function mdLinks() {
+  const map = {};
+  for (const a of S.avregninger) for (const n of (a.maaledokNr || [])) map[n.replace(/^0+/, '')] = a.nr;
+  return map;
+}
+
 function prognose() {
+  const links = mdLinks();
   const avtaler = {};
+  const get = avt => avtaler[avt] || (avtaler[avt] = { avtale: avt, total: null, d: '', venter: 0, venterAnt: 0, avregnet: 0 });
   for (const m of S.maaledok) {
-    if (!m.avtale || m.avtaleTotal == null) continue;
-    const cur = avtaler[m.avtale];
-    const d = m.dato.split('.').reverse().join('');
-    if (!cur || d > cur.d) avtaler[m.avtale] = { d, total: m.avtaleTotal };
+    const a = get(m.avtale || '?');
+    if (!links[mdKey(m.nr)]) { a.venter += m.volum; a.venterAnt++; }
+    const d = (m.dato || '').split('.').reverse().join('');
+    if (m.avtaleTotal != null && d >= a.d) { a.total = m.avtaleTotal; a.d = d; }
   }
-  let vol = 0; const detaljer = [];
-  for (const [avt, v] of Object.entries(avtaler)) {
-    const avregnet = S.avregninger.filter(a => a.avtale === avt).reduce((s, a) => s + a.volum, 0);
-    const rest = Math.max(0, v.total - avregnet);
-    detaljer.push({ avtale: avt, total: v.total, avregnet, rest }); vol += rest;
-  }
-  if (!detaljer.length) return null;
+  if (!Object.keys(avtaler).length) return null;
+  let vol = 0, venterVol = 0, manglerVol = 0;
+  const detaljer = Object.values(avtaler).map(a => {
+    a.avregnet = S.avregninger.filter(x => x.avtale === a.avtale).reduce((s, x) => s + x.volum, 0);
+    a.mangler = a.total != null ? Math.max(0, a.total - a.avregnet - a.venter) : 0;
+    vol += a.venter + a.mangler; venterVol += a.venter; manglerVol += a.mangler;
+    return a;
+  });
   const all = S.avregninger.filter(a => a.volum > 0);
   const totVol = all.reduce((s, a) => s + a.volum, 0);
   const perEks = totVol ? all.reduce((s, a) => s + a.nettoEks, 0) / totVol : 0;
   const perInkl = totVol ? all.reduce((s, a) => s + a.nettoEks + a.nettoMva, 0) / totVol : 0;
   const perBrutto = totVol ? all.reduce((s, a) => s + a.innEks, 0) / totVol : 0;
-  return { vol, detaljer, nettoEks: vol * perEks, nettoInkl: vol * perInkl, brutto: vol * perBrutto };
+  return { vol, venterVol, manglerVol, detaljer, nettoEks: vol * perEks, nettoInkl: vol * perInkl, brutto: vol * perBrutto, harPris: totVol > 0 };
+}
+
+// Prognose per sortiment for resten av hver avtale
+function prognoseSort() {
+  const R = RATES[S.year] || RATES[YEARS[YEARS.length-1]];
+  const navn = {}; S.maaledok.forEach(m => Object.assign(navn, m.navn || {}));
+  S.avregninger.forEach(a => (a.sortimenter || []).forEach(x => { navn[x.kode] = x.navn; }));
+  // siste kjente pris per sortiment
+  const pris = {}; [...S.avregninger].sort((a, b) => a.dato.split('.').reverse().join('').localeCompare(b.dato.split('.').reverse().join('')))
+    .forEach(a => (a.sortimenter || []).forEach(x => { pris[x.kode] = x.pris; }));
+  const mvKode = Object.keys(pris).find(k => /blanding|massevirke|\bmv\b/i.test(navn[k] || ''));
+  const mvPris = mvKode ? pris[mvKode] : null;
+  const latest = {};
+  for (const m of S.maaledok) {
+    if (!m.avtaleSort || !Object.keys(m.avtaleSort).length) continue;
+    const d = (m.dato || '').split('.').reverse().join('');
+    if (!latest[m.avtale] || d >= latest[m.avtale].d) latest[m.avtale] = { d, sort: m.avtaleSort, dato: m.dato };
+  }
+  const avtaler = Object.entries(latest);
+  if (!avtaler.length) return null;
+  const T = { vol: 0, brutto: 0, bruttoMva: 0, kost: 0, kostMva: 0, skogfond: 0, linjer: [], avtaler: [] };
+  for (const [avt, info] of avtaler) {
+    const avr = S.avregninger.filter(a => a.avtale === avt);
+    const avrSort = {}; avr.forEach(a => (a.sortimenter || []).forEach(x => { avrSort[x.kode] = (avrSort[x.kode] || 0) + x.volum; }));
+    let restVol = 0, brutto = 0;
+    for (const [kode, inn] of Object.entries(info.sort)) {
+      const rest = Math.max(0, inn - (avrSort[kode] || 0));
+      const vrak = /^9\d\d$/.test(kode) || /vrak|avdr/i.test(navn[kode] || '');
+      let p, kilde;
+      if (S.priser && S.priser[kode] !== undefined && S.priser[kode] !== '') { p = num(S.priser[kode]); kilde = 'egen'; }
+      else if (vrak) { p = 0; kilde = 'vrak'; }
+      else if (pris[kode] !== undefined) { p = pris[kode]; kilde = 'avregning'; }
+      else if (mvPris !== null) { p = mvPris; kilde = 'anslått'; }
+      else { p = 0; kilde = 'mangler'; }
+      restVol += rest; brutto += rest * p;
+      T.linjer.push({ avtale: avt, kode, navn: navn[kode] || '', inn, avregnet: avrSort[kode] || 0, rest, pris: p, kilde, verdi: rest * p });
+    }
+    // kostnadssatser fra siste avregning på avtalen (engangsbeløp utelates)
+    const ref = avr.sort((a, b) => b.dato.split('.').reverse().join('').localeCompare(a.dato.split('.').reverse().join('')))[0]
+      || [...S.avregninger].sort((a, b) => b.dato.split('.').reverse().join('').localeCompare(a.dato.split('.').reverse().join('')))[0];
+    let kost = 0, kostMva = 0, sfSats = 0, mvaSats = 0.25;
+    if (ref && ref.volum) {
+      const f = restVol / ref.volum;
+      [...(ref.utgLinjer || []), ...(ref.trekkLinjer || [])].forEach(x => {
+        if (x.grunnlag != null && Math.abs(x.grunnlag) <= 1.5) return; // engangsbeløp (oppstart, flytting)
+        kost += Math.abs(x.belop) * f; kostMva += Math.abs(x.mva || 0) * f;
+      });
+      sfSats = ref.skogfondSats != null ? ref.skogfondSats : (ref.innEks ? ref.skogfond / ref.innEks : 0);
+      if (ref.innEks) mvaSats = ref.innMva / ref.innEks;
+    }
+    const sf = brutto * sfSats;
+    T.avtaler.push({ avtale: avt, dato: info.dato, restVol, brutto, sfSats, ref: ref ? ref.nr : '' });
+    T.vol += restVol; T.brutto += brutto; T.bruttoMva += brutto * mvaSats; T.kost += kost; T.kostMva += kostMva; T.skogfond += sf;
+  }
+  T.utbetaling = T.brutto + T.bruttoMva - T.kost - T.kostMva - T.skogfond;
+  T.grunnlagKap = T.utbetaling;
+  T.grunnlagNaering = T.brutto - T.kost - T.skogfond;
+  T.mangler = T.linjer.filter(l => l.rest > 0.05 && (l.kilde === 'anslått' || l.kilde === 'mangler'));
+  return T;
 }
 
 /* ---------- Visning ---------- */
@@ -563,6 +684,7 @@ function render() {
   if (!gToken && !$('gStatus').textContent && S.driveSynced)
     gStatus('Sist hentet ' + new Date(S.driveSynced).toLocaleString('nb-NO', { dateStyle: 'short', timeStyle: 'short' }));
   renderArchive();
+  renderForecast();
   const kap = S.mode === 'kapital';
   $('modeHint').textContent = kap
     ? 'Kapitalskog: netto overskudd beskattes som kapitalinntekt (22 %). Mva på tømmeroppgjøret regnes som inntekt, og mva på kostnader er med i fradraget. Ingen trygdeavgift eller trinnskatt på skoginntekten.'
@@ -575,7 +697,7 @@ function render() {
     avs.map(a => `<tr>
       <td><input type="checkbox" data-med="${a.id}" ${a.med ? 'checked' : ''} title="Ta med i beregningen"></td>
       <td>${esc(a.dato)}${yearOf(a.dato) !== +S.year ? ' <span class="tag warn">' + yearOf(a.dato) + '</span>' : ''}</td>
-      <td>${a.link ? `<a href="${esc(a.link)}" target="_blank" rel="noopener">${esc(a.nr)}</a>` : esc(a.nr)}<br><span class="hint">${esc(a.firma)}${a.periode ? ' · ' + esc(a.periode) : ''}</span>${a.kontrollOk ? '' : '<br><span class="tag warn">sjekk summer</span>'}</td>
+      <td>${a.link ? `<a href="${esc(a.link)}" target="_blank" rel="noopener">${esc(a.nr)}</a>` : esc(a.nr)}<br><span class="hint">${esc(a.firma)}${a.periode ? ' · ' + esc(a.periode) : ''}</span>${a.kontrollOk ? '' : '<br><span class="tag warn">sjekk summer</span>'}${(a.maaledokNr || []).length ? (() => { const have = new Set(S.maaledok.map(m => mdKey(m.nr))); const n = a.maaledokNr.filter(x => have.has(x.replace(/^0+/, ''))).length; return '<br><span class="hint">' + n + ' av ' + a.maaledokNr.length + ' måledok. lastet opp</span>'; })() : ''}</td>
       <td class="n">${fmt(a.volum, 2)}</td>
       <td class="n">${fmt(a.innEks)}</td>
       <td class="n">${fmt(a.utgEks + a.trekkEks)}</td>
@@ -585,8 +707,10 @@ function render() {
     : '<tr><td class="hint">Ingen ennå.</td></tr>';
 
   const mds = [...S.maaledok].sort((a,b) => (a.dato.split('.').reverse().join('')).localeCompare(b.dato.split('.').reverse().join('')));
-  $('mdTable').innerHTML = mds.length ? `<tr><th>Måledato</th><th>Måledok.nr</th><th>Avtale</th><th>Mottaker</th><th class="n">m³</th><th></th></tr>` +
+  const links = mdLinks();
+  $('mdTable').innerHTML = mds.length ? `<tr><th>Måledato</th><th>Måledok.nr</th><th>Avtale</th><th>Mottaker</th><th class="n">m³</th><th>Status</th><th></th></tr>` +
     mds.map(m => `<tr><td>${esc(m.dato)}</td><td>${m.link ? `<a href="${esc(m.link)}" target="_blank" rel="noopener">${esc(m.nr)}</a>` : esc(m.nr)}</td><td>${esc(m.avtale)}</td><td>${esc(m.kjoper)}</td><td class="n">${fmt(m.volum, 2)}</td>
+      <td>${links[mdKey(m.nr)] ? '<span class="tag">avregnet · ' + esc(links[mdKey(m.nr)]) + '</span>' : '<span class="tag warn">venter på avregning</span>'}</td>
       <td><button class="x" data-delmd="${m.id}" title="Fjern">✕</button></td></tr>`).join('')
     : '<tr><td class="hint">Ingen ennå.</td></tr>';
 
@@ -647,12 +771,24 @@ function render() {
   ]) + '<p class="hint">Skogfondet beskattes ikke det året det settes av. Ved bruk til godkjente tiltak (planting, ungskogpleie, skogsvei m.m.) er bare 15 % skattepliktig, og tiltaket gir i tillegg fradrag.</p>';
 
   const p = c.prog;
-  $('progCard').hidden = !p;
-  if (p) $('progRows').innerHTML = rows([
-    ...p.detaljer.map(d => ['Avtale ' + d.avtale, fmt(d.rest, 1) + ' m³ av ' + fmt(d.total, 1)]),
-    ['Anslått tømmerverdi ekskl. mva', kr(p.brutto)],
-    ['Anslått netto til skogeier', kr(c.kap ? p.nettoInkl : p.nettoEks), 'sum'],
-  ]) + '<p class="hint">Basert på siste måledokument per avtale og snittpris fra avregningene. Kan havne på neste års skatt hvis avregningen kommer etter nyttår.</p>';
+  $('progCard').hidden = !p && !c.ps;
+  if (c.ps) $('progRows').innerHTML = rows([
+    ['Gjenstår å avregne', fmt(c.ps.vol, 1) + ' m³'],
+    ['Forventet tømmerverdi ekskl. mva', kr(c.ps.brutto)],
+    ['Forventet til skogfond', kr(c.ps.skogfond)],
+    ['Forventet utbetalt', kr(c.ps.utbetaling), 'sum'],
+  ]) + '<p class="hint">Detaljer per sortiment under «Forventet resten av avtalen».</p>';
+  if (p && !c.ps) $('progRows').innerHTML = rows([
+    ...p.detaljer.flatMap(d => [
+      ['<strong>Avtale ' + esc(d.avtale) + '</strong>', d.total != null ? fmt(d.total, 1) + ' m³ innmålt' : ''],
+      ['Avregnet', fmt(d.avregnet, 1) + ' m³'],
+      ['Venter – måledok. i arkivet (' + d.venterAnt + ')', fmt(d.venter, 1) + ' m³'],
+      d.mangler > 0.05 ? ['Innmålt, men måledok. ikke lastet opp', fmt(d.mangler, 1) + ' m³'] : null,
+    ]),
+    ['Forventet ikke avregnet', fmt(p.vol, 1) + ' m³', 'sum'],
+    p.harPris ? ['Anslått tømmerverdi ekskl. mva', kr(p.brutto)] : null,
+    p.harPris ? ['Anslått netto til skogeier', kr(c.kap ? p.nettoInkl : p.nettoEks), 'sum'] : null,
+  ]) + '<p class="hint">Måledokumenter kobles til avregningen via listen «Måledokumenter som inngår i avregningen». Det som ikke er koblet, venter på en senere avregning. Anslaget bruker snittpris per m³ fra avregningene, og kan havne på neste års skatt hvis avregningen kommer etter nyttår.</p>';
 }
 
 /* ---------- Hendelser ---------- */
@@ -695,6 +831,8 @@ $('gSync').addEventListener('click', gSync);
 $('gFolder').addEventListener('input', e => { S.gFolder = e.target.value; persist(); });
 $('gClient').addEventListener('input', e => { S.gClientId = e.target.value.trim(); persist(); });
 $('arcCat').addEventListener('change', renderArchive);
+document.addEventListener('change', e => { const k = e.target.dataset && e.target.dataset.pris; if (!k) return;
+  S.priser = S.priser || {}; const v = e.target.value.trim(); if (v === '') delete S.priser[k]; else S.priser[k] = v; persist(); render(); });
 $('arcQ').addEventListener('input', renderArchive);
 $('addManual').addEventListener('click', () => { S.manual.push({ type: 'kostnad', tekst: '', dato: '', belop: '' }); persist(); render(); });
 
