@@ -90,20 +90,12 @@
             <option value="naering">Næring (enkeltpersonforetak)</option>
           </select>
         </div>
-        <div>
-          <label for="lonn">Skogeiers lønn i året (kr)</label>
-          <input id="lonn" inputmode="decimal" placeholder="0">
+        <div id="trinnBox" hidden>
+          <label for="trinn">Trinnskatt (avhenger av øvrig inntekt)</label>
+          <select id="trinn"></select>
         </div>
         <div>
-          <label for="pensjon">Skogeiers pensjon/trygd i året (kr)</label>
-          <input id="pensjon" inputmode="decimal" placeholder="0">
-        </div>
-        <div>
-          <label for="fradrag">Andre fradrag, f.eks. gjeldsrenter (kr)</label>
-          <input id="fradrag" inputmode="decimal" placeholder="0">
-        </div>
-        <div>
-          <label for="betalt">Allerede innbetalt/avsatt skatt for skogen (kr)</label>
+          <label for="betalt">Allerede satt av til skatt for skogen (kr)</label>
           <input id="betalt" inputmode="decimal" placeholder="0">
         </div>
       </div>
@@ -194,7 +186,6 @@
       <h2>Sett av til skatt <small id="yrLbl"></small></h2>
       <div class="big" id="settAv">–</div>
       <div class="hint" id="settAvSub"></div>
-      <div class="note" id="incomeWarn" style="margin-top:12px" hidden>Fyll inn skogeiers lønn eller pensjon under «Oppsett». Uten annen inntekt regnes det som om personfradraget brukes på skoginntekten, og skatten kan bli for lav.</div>
       <div class="rows" id="resRows" style="margin-top:12px"></div>
     </div>
     <div class="card" id="mvaCard" hidden>
@@ -252,7 +243,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':
 
 /* ---------- Tilstand ---------- */
 const KEY = 'skogskatt-v1';
-const blank = () => ({ year: 2026, mode: 'kapital', lonn:'', pensjon:'', fradrag:'', betalt:'',
+const blank = () => ({ year: 2026, mode: 'kapital', trinn: '0.04', betalt:'',
   sfBrukt:'', motregnet:'', inclProg:false, avregninger: [], maaledok: [], manual: [], gFolder: '', gClientId: '', driveFiles: [], driveSeen: {}, driveSynced: '' });
 let S = blank();
 try { const raw = localStorage.getItem(KEY); if (raw) S = Object.assign(blank(), JSON.parse(raw)); } catch(e) {}
@@ -502,19 +493,6 @@ function renderArchive() {
 }
 
 /* ---------- Skatt ---------- */
-function personSkatt(R, { lonn=0, pensjon=0, naering=0, kapital=0, fradrag=0 }) {
-  const mf = Math.min(Math.min(lonn * R.mfLonn, R.mfLonnMax) + Math.min(pensjon * R.mfPensjon, R.mfPensjonMax), R.mfLonnMax);
-  const alm = lonn + pensjon + naering + kapital - mf - fradrag;
-  const almSkatt = Math.max(0, alm - R.personfradrag) * R.alm;
-  const npi = Math.max(0, naering);
-  const pi = lonn + pensjon + npi;
-  let trinn = 0;
-  R.trinn.forEach(([g, s], i) => { const top = i + 1 < R.trinn.length ? R.trinn[i+1][0] : Infinity; if (pi > g) trinn += (Math.min(pi, top) - g) * s; });
-  const raw = lonn * R.tLonn + pensjon * R.tPensjon + npi * R.tNaering;
-  const tryg = pi <= R.tGrense ? 0 : Math.min(raw, (pi - R.tGrense) * R.tOpptrapp);
-  return { alm: almSkatt, trinn, tryg, total: almSkatt + trinn + tryg };
-}
-
 const yearOf = d => +(d || '').slice(-4);
 
 function compute() {
@@ -535,15 +513,16 @@ function compute() {
   const progNetto = S.inclProg && prog ? (kap ? prog.nettoInkl : prog.nettoEks) : 0;
 
   const skogNetto = inn - utg - trekk - sf + mInn - mKost + sfSkattbar + progNetto;
-  const base = { lonn: num(S.lonn), pensjon: num(S.pensjon), fradrag: num(S.fradrag) };
-  const uten = personSkatt(R, base);
-  const med = personSkatt(R, Object.assign({}, base, kap ? { kapital: skogNetto } : { naering: skogNetto }));
-  const skatt = Math.max(0, med.total - uten.total);
+  // Isolert marginalskatt på skogoverskuddet (øvrig inntekt antas å bruke opp fradragene)
+  const pos = Math.max(0, skogNetto);
+  const trinnSats = kap ? 0 : +S.trinn || 0;
+  const del = { alm: pos * R.alm, trinn: pos * trinnSats, tryg: kap ? 0 : pos * R.tNaering };
+  const skatt = del.alm + del.trinn + del.tryg;
   const rest = Math.max(0, skatt - num(S.betalt));
   const mva = kap ? 0 : sum('nettoMva');
   const utbetalt = sum('utbetalt');
   return { R, kap, av, inn, utg, trekk, sf, mInn, mKost, sfSkattbar, prog, progNetto, skogNetto,
-    uten, med, skatt, rest, mva, utbetalt, marg: skogNetto > 0 ? skatt / skogNetto : 0 };
+    del, skatt, rest, mva, utbetalt, marg: R.alm + trinnSats + (kap ? 0 : R.tNaering) };
 }
 
 function prognose() {
@@ -574,7 +553,8 @@ const rows = arr => arr.filter(Boolean).map(([a, b, cls]) => `<div class="${cls|
 
 function render() {
   // felter
-  ['lonn','pensjon','fradrag','betalt','sfBrukt','motregnet'].forEach(k => { if (document.activeElement !== $(k)) $(k).value = S[k]; });
+  ['betalt','sfBrukt','motregnet'].forEach(k => { if (document.activeElement !== $(k)) $(k).value = S[k]; });
+  $('trinnBox').hidden = S.mode === 'kapital'; $('trinn').value = S.trinn;
   $('year').value = S.year; $('mode').value = S.mode; $('inclProg').checked = !!S.inclProg;
   if (document.activeElement !== $('gFolder')) $('gFolder').value = S.gFolder || '';
   if (document.activeElement !== $('gClient')) $('gClient').value = S.gClientId || '';
@@ -586,7 +566,7 @@ function render() {
   const kap = S.mode === 'kapital';
   $('modeHint').textContent = kap
     ? 'Kapitalskog: netto overskudd beskattes som kapitalinntekt (22 %). Mva på tømmeroppgjøret regnes som inntekt, og mva på kostnader er med i fradraget. Ingen trygdeavgift eller trinnskatt på skoginntekten.'
-    : 'Næring: overskuddet er personinntekt (22 % + trinnskatt + 10,8 % trygdeavgift). Mva holdes utenfor inntekten og betales i mva-meldingen.';
+    : 'Næring: overskuddet er personinntekt (22 % + trinnskatt + 10,8 % trygdeavgift). Trinnskatten avhenger av øvrig inntekt – velg trinnet du havner i. Mva holdes utenfor inntekten og betales i mva-meldingen.';
   $('manualMvaHint').textContent = kap ? 'Før beløp inkl. mva.' : 'Før beløp ekskl. mva.';
 
   // avregninger
@@ -621,7 +601,6 @@ function render() {
   // resultat
   const c = compute();
   $('yrLbl').textContent = S.year;
-  $('incomeWarn').hidden = !(c.skogNetto > 0 && !num(S.lonn) && !num(S.pensjon));
   $('settAv').textContent = kr(c.rest);
   $('settAvSub').textContent = c.skogNetto > 0
     ? `Skatt på skogoverskuddet: ${kr(c.skatt)} (${fmt(c.marg * 100, 1)} % av overskuddet)` + (num(S.betalt) ? `, minus ${kr(num(S.betalt))} allerede satt av` : '')
@@ -636,9 +615,9 @@ function render() {
     c.sfSkattbar ? ['Skattepliktig del av brukt skogfond (15 %)', kr(c.sfSkattbar)] : null,
     c.progNetto ? ['Anslag levert, ikke avregnet', kr(c.progNetto)] : null,
     ['Skattepliktig overskudd skog', kr(c.skogNetto), 'sum'],
-    ['Skatt på alminnelig inntekt', kr(c.med.alm - c.uten.alm)],
-    !c.kap ? ['Trinnskatt', kr(c.med.trinn - c.uten.trinn)] : null,
-    !c.kap ? ['Trygdeavgift', kr(c.med.tryg - c.uten.tryg)] : null,
+    ['Skatt 22 %', kr(c.del.alm)],
+    !c.kap ? ['Trinnskatt ' + fmt(+S.trinn * 100, 1) + ' %', kr(c.del.trinn)] : null,
+    !c.kap ? ['Trygdeavgift ' + fmt(c.R.tNaering * 100, 1) + ' %', kr(c.del.tryg)] : null,
     ['Skatt på skogen', kr(c.skatt), 'sum'],
   ]);
 
@@ -658,7 +637,7 @@ function render() {
   ]) : '<div class="hint">Ingen avregninger i ' + S.year + '.</div>';
 
   const sfSum = S.avregninger.reduce((s, a) => s + a.skogfond, 0);
-  const marg = c.kap ? c.R.alm : Math.max(c.marg, c.R.alm);
+  const marg = c.marg;
   $('sfRows').innerHTML = rows([
     ['Avsatt i ' + S.year, kr(c.sf)],
     ['Avsatt i alle innleste avregninger', kr(sfSum)],
@@ -678,7 +657,11 @@ function render() {
 
 /* ---------- Hendelser ---------- */
 YEARS.forEach(y => $('year').insertAdjacentHTML('beforeend', `<option>${y}</option>`));
-['lonn','pensjon','fradrag','betalt','sfBrukt','motregnet'].forEach(k => $(k).addEventListener('input', e => { S[k] = e.target.value; persist(); render(); }));
+(() => { const R = RATES[YEARS[YEARS.length-1]]; const opts = [['0', 'Ingen (personinntekt under ' + fmt(R.trinn[0][0]) + ' kr)']]
+  .concat(R.trinn.map(([g, s], i) => [String(s), 'Trinn ' + (i + 1) + ': ' + fmt(s * 100, 1) + ' % (fra ' + fmt(g) + ' kr)']));
+  $('trinn').innerHTML = opts.map(([v, t]) => `<option value="${v}">${t}</option>`).join(''); })();
+$('trinn').addEventListener('change', e => { S.trinn = e.target.value; persist(); render(); });
+['betalt','sfBrukt','motregnet'].forEach(k => $(k).addEventListener('input', e => { S[k] = e.target.value; persist(); render(); }));
 $('year').addEventListener('change', e => { S.year = +e.target.value; persist(); render(); });
 $('mode').addEventListener('change', e => { S.mode = e.target.value; persist(); render(); });
 $('inclProg').addEventListener('change', e => { S.inclProg = e.target.checked; persist(); render(); });
