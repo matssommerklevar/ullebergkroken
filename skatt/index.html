@@ -527,14 +527,17 @@ function renderArchive() {
   const files = S.driveFiles || [];
   $('archive').hidden = !files.length;
   if (!files.length) return;
-  const cats = [...new Set(files.map(f => f.path[0] || '(hovedmappen)'))].sort();
+  // alle mappenivåer som filter, f.eks. «Dale» og «Dale / Målebrev»
+  const pstr = f => f.path.join(' / ');
+  const inCat = (f, c) => c === '(hovedmappen)' ? !f.path.length : (pstr(f) === c || pstr(f).startsWith(c + ' / '));
+  const cats = [...new Set(files.flatMap(f => f.path.length ? f.path.map((_, i) => f.path.slice(0, i + 1).join(' / ')) : ['(hovedmappen)']))].sort();
   const sel = $('arcCat'), cur = sel.value;
   sel.innerHTML = '<option value="">Alle mapper (' + files.length + ')</option>' +
-    cats.map(c => `<option value="${esc(c)}">${esc(c)} (${files.filter(f => (f.path[0] || '(hovedmappen)') === c).length})</option>`).join('');
+    cats.map(c => `<option value="${esc(c)}">${'\u00a0\u00a0'.repeat(c.split(' / ').length - 1)}${esc(c.split(' / ').pop())} (${files.filter(f => inCat(f, c)).length})</option>`).join('');
   sel.value = cats.includes(cur) ? cur : '';
   const q = $('arcQ').value.trim().toLowerCase();
   const kindTag = { avregning: '<span class="tag">avregning lest</span>', maaledok: '<span class="tag">måledok. lest</span>', feil: '<span class="tag warn">kunne ikke leses</span>' };
-  const list = files.filter(f => (!sel.value || (f.path[0] || '(hovedmappen)') === sel.value) && (!q || (f.name + ' ' + f.path.join(' ')).toLowerCase().includes(q)))
+  const list = files.filter(f => (!sel.value || inCat(f, sel.value)) && (!q || (f.name + ' ' + f.path.join(' ')).toLowerCase().includes(q)))
     .sort((a, b) => a.path.join('/').localeCompare(b.path.join('/')) || b.modified.localeCompare(a.modified));
   $('arcTable').innerHTML = `<tr><th>Fil</th><th>Mappe</th><th>Endret</th><th></th></tr>` + (list.map(f => `<tr>
       <td><a href="${esc(f.link)}" target="_blank" rel="noopener">${esc(f.name)}</a></td>
