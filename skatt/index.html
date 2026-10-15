@@ -312,7 +312,18 @@ function parseAvregning(lines, fileName) {
     .map(l => { const n = nums(l); return { navn: label(l), grunnlag: n.length >= 5 ? n[0] : null, sats: n.length >= 5 ? n[1] : null, belop: n[n.length-3], mva: n[n.length-2], sum: n[n.length-1] }; });
   const sortimenter = section(lines, /Detaljer virkessortimenter/i, /^\s*Sum\b/).map(l => {
       const m = l.match(/^\s*(\d{3})\s+(.+?)\s{2,}(K-[\w-]+)?/); const n = nums(l);
-      return m && n.length >= 3 ? { kode: m[1], navn: m[2].trim(), volum: n[n.length-3], pris: n[n.length-2], belop: n[n.length-1] } : null; }).filter(Boolean);
+      return m && n.length >= 3 ? { kode: m[1], navn: m[2].trim(), volum: n[n.length-3], pris: n[n.length-2], belop: n[n.length-1] } : null; }).filter(Boolean)
+    // Slå sammen linjer per sortiment. Tilleggslinjer (f.eks. «Helårstillegg») gjentar volumet,
+    // så de legger bare til beløp – ikke volum – og får ikke overstyre navnet.
+    .reduce((acc, x) => {
+      const tillegg = /tillegg|trekk|bonus|fradrag|premie/i.test(x.navn);
+      const cur = acc.find(y => y.kode === x.kode);
+      if (!cur) acc.push(tillegg ? { kode: x.kode, navn: '', volum: x.volum, belop: x.belop, tillegg: [x.navn], _bare: true } : { kode: x.kode, navn: x.navn, volum: x.volum, belop: x.belop, tillegg: [] });
+      else if (tillegg) { cur.belop += x.belop; cur.tillegg.push(x.navn); }
+      else if (cur._bare) { cur.navn = x.navn; cur.belop += x.belop; delete cur._bare; }
+      else { cur.volum += x.volum; cur.belop += x.belop; }
+      return acc;
+    }, []).map(x => Object.assign(x, { pris: x.volum ? x.belop / x.volum : 0 }));
   const trekk = section(lines, /^\s*Tillegg\/trekk/, /^\s*Sum tillegg\/trekk/).filter(l => nums(l).length >= 3)
     .map(l => { const n = nums(l); return { navn: label(l), grunnlag: n[0], sats: n.length >= 5 ? n[1] : null, belop: n[n.length-3], mva: n[n.length-2], sum: n[n.length-1] }; });
   const sf = trekk.filter(x => /skogfond/i.test(x.navn));
@@ -400,7 +411,7 @@ async function handleFiles(files) {
 
 /* ---------- Google Disk ---------- */
 const CONFIG = { googleClientId: '1709168763-kl52fd3ibkmmj09qnob47hdo8alcbvn5.apps.googleusercontent.com' };   // fylles inn når klient-ID-en er klar
-const PARSER_V = 3;
+const PARSER_V = 4;
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 let gToken = null, gTokenClient = null, gBusy = false;
 const clientId = () => (CONFIG.googleClientId || S.gClientId || '').trim();
@@ -617,7 +628,7 @@ function prognose() {
 function prognoseSort() {
   const R = RATES[S.year] || RATES[YEARS[YEARS.length-1]];
   const navn = {}; S.maaledok.forEach(m => Object.assign(navn, m.navn || {}));
-  S.avregninger.forEach(a => (a.sortimenter || []).forEach(x => { navn[x.kode] = x.navn; }));
+  S.avregninger.forEach(a => (a.sortimenter || []).forEach(x => { if (x.navn) navn[x.kode] = x.navn; }));
   // siste kjente pris per sortiment
   const pris = {}; [...S.avregninger].sort((a, b) => a.dato.split('.').reverse().join('').localeCompare(b.dato.split('.').reverse().join('')))
     .forEach(a => (a.sortimenter || []).forEach(x => { pris[x.kode] = x.pris; }));
