@@ -556,17 +556,18 @@ function renderOverview() {
     return `<div class="bar" role="img" aria-label="${fmt(a, 0)} % skatt, ${fmt(b, 0)} % fritt">` +
       (a > 0 ? `<span style="width:${a}%;background:var(--c-skatt)" title="Sett av til skatt: ${kr(skatt)}"></span>` : '') +
       (b > 0 ? `<span style="width:${b}%;background:var(--c-fritt)" title="Fritt å bruke: ${kr(fritt)}"></span>` : '') + '</div>'; };
-  const blk = (tittel, sub, cash, cashLbl, skatt, ekstra) => `<h3>${tittel}</h3><div class="sub">${sub}</div>` + bar(skatt + (ekstra || 0), cash - skatt - (ekstra || 0)) +
+  const blk = (tittel, sub, cash, cashLbl, skatt, ekstra, sf) => `<h3>${tittel}</h3><div class="sub">${sub}</div>` + bar(skatt + (ekstra || 0), cash - skatt - (ekstra || 0)) +
     `<div class="kv"><span>${cashLbl}</span><span class="n">${kr(cash)}</span>
       <span><span class="sw" style="background:var(--c-skatt)"></span>Sett av til skatt</span><span class="n"><strong>${kr(skatt)}</strong></span>
       ${ekstra ? `<span>Sett av til mva</span><span class="n">${kr(ekstra)}</span>` : ''}
-      <span><span class="sw" style="background:var(--c-fritt)"></span>Fritt å bruke</span><span class="n">${kr(cash - skatt - (ekstra || 0))}</span></div>`;
+      <span><span class="sw" style="background:var(--c-fritt)"></span>Fritt å bruke</span><span class="n">${kr(cash - skatt - (ekstra || 0))}</span></div>` +
+    (sf ? `<div class="sub" style="margin:6px 0 0">I tillegg går ${kr(sf)} til skogfondskontoen (trukket før utbetaling, ikke skatt nå).</div>` : '');
   // 1) Utbetalt
   const n = c.av.length;
   const paidCash = c.utbetalt - mot;
   const paidSkatt = c.rest, paidMva = c.kap ? 0 : c.mva;
   $('ovPaid').innerHTML = n
-    ? blk('1. Allerede utbetalt', `${n} avregning${n > 1 ? 'er' : ''} i ${S.year}` + (mot ? ` · motregnet ${kr(mot)}` : '') + (num(S.betalt) ? ` · ${kr(num(S.betalt))} allerede satt av` : ''), paidCash, 'Inn på konto', paidSkatt, paidMva)
+    ? blk('1. Allerede utbetalt', `${n} avregning${n > 1 ? 'er' : ''} i ${S.year}` + (mot ? ` · motregnet ${kr(mot)}` : '') + (num(S.betalt) ? ` · ${kr(num(S.betalt))} allerede satt av` : ''), paidCash, 'Inn på bankkonto', paidSkatt, paidMva, c.sf)
     : '<h3>1. Allerede utbetalt</h3><div class="sub">Ingen avregninger i ' + S.year + ' ennå.</div>';
   // 2) Forventet
   let nextCash = 0, nextSkatt = 0, nextMva = 0;
@@ -574,13 +575,13 @@ function renderOverview() {
     const grunnlag = c.kap ? T.grunnlagKap : T.grunnlagNaering;
     nextCash = T.utbetaling; nextSkatt = Math.max(0, grunnlag) * c.marg; nextMva = c.kap ? 0 : T.bruttoMva - T.kostMva;
     $('ovNext').innerHTML = blk('2. Forventet ved kommende avregninger',
-      `${fmt(T.vol, 0)} m³ innmålt, ikke avregnet` + (T.ekstra ? ` (inkl. ${fmt(T.ekstra, 0)} m³ hogd, ikke innmålt)` : '') + ' · anslag', nextCash, 'Forventet inn på konto', nextSkatt, nextMva);
+      `${fmt(T.vol, 0)} m³ innmålt, ikke avregnet` + (T.ekstra ? ` (inkl. ${fmt(T.ekstra, 0)} m³ hogd, ikke innmålt)` : '') + ' · anslag', nextCash, 'Forventet inn på bankkonto', nextSkatt, nextMva, T.skogfond);
   } else $('ovNext').innerHTML = '<h3>2. Forventet ved kommende avregninger</h3><div class="sub">Last opp målebrev for å få et anslag.</div>';
   // 3) Totalt
   const totCash = (n ? paidCash : 0) + nextCash, totSkatt = (n ? paidSkatt : 0) + nextSkatt, totMva = (n ? paidMva : 0) + nextMva;
   $('ovTot').innerHTML = `<h3>Totalt for ${S.year}</h3><div class="sub">Utbetalt + forventet</div>` +
     `<div class="big">${kr(totSkatt)}</div><div class="sub" style="margin-top:0">å sette av til skatt${totMva ? ' + ' + kr(totMva) + ' mva' : ''}</div>` + bar(totSkatt + totMva, totCash - totSkatt - totMva) +
-    `<div class="kv"><span>Inn på konto totalt</span><span class="n">${kr(totCash)}</span><span>Fritt å bruke totalt</span><span class="n">${kr(totCash - totSkatt - totMva)}</span></div>`;
+    `<div class="kv"><span>Inn på bankkonto totalt</span><span class="n">${kr(totCash)}</span><span>Fritt å bruke totalt</span><span class="n">${kr(totCash - totSkatt - totMva)}</span><span>Til skogfondskontoen totalt</span><span class="n">${kr((n ? c.sf : 0) + (T ? T.skogfond : 0))}</span></div>`;
 }
 
 function renderForecast() {
