@@ -153,6 +153,10 @@
 
       <h3 style="font-size:.95rem;margin:18px 0 6px">Måledokumenter</h3>
       <div class="scroll"><table id="mdTable"></table></div>
+
+      <h3 style="font-size:.95rem;margin:18px 0 6px">Fakturaer</h3>
+      <div class="scroll"><table id="fTable"></table></div>
+      <p class="hint" id="fHint"></p>
       <div id="pending" style="margin-top:10px"></div>
     </section>
 
@@ -232,11 +236,15 @@
       <h2>Skatt å sette av <small id="yrLbl"></small></h2>
       <div class="blk" id="ovPaid"></div>
       <div id="ovMot" style="margin:-4px 0 4px;padding:10px 12px;background:var(--bg);border-radius:8px">
+        <div id="ovMotFakt" hidden></div>
+        <div id="ovMotManual">
         <label for="motregnet2" style="margin-bottom:4px">Motregnet faktura (trukket fra utbetalingen, kr)</label>
         <input id="motregnet2" inputmode="decimal" placeholder="0" style="background:var(--card)">
         <label style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;color:var(--fg);font-size:.85rem">
           <input type="checkbox" id="motFradrag" style="margin-top:3px"> Fakturaen gjelder en skogkostnad som ikke står på avregningen (f.eks. planting, skogsvei, ekstra hogst) – gir fradrag
         </label>
+        <p class="hint" style="margin:6px 0 0">Legg fakturaene i Fakturaer-mappen, så fylles dette ut automatisk.</p>
+        </div>
       </div>
       <div class="blk" id="ovNext"></div>
       <div class="blk tot" id="ovTot"></div>
@@ -304,7 +312,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':
 /* ---------- Tilstand ---------- */
 const KEY = 'skogskatt-v1';
 const blank = () => ({ year: 2026, mode: 'kapital', trinn: '0.04', betalt:'',
-  sfBrukt:'', motregnet:'', inclProg:false, avregninger: [], maaledok: [], manual: [], gFolder: '', gClientId: '', driveFiles: [], driveSeen: {}, driveSynced: '' });
+  sfBrukt:'', motregnet:'', inclProg:false, avregninger: [], maaledok: [], fakturaer: [], manual: [], gFolder: '', gClientId: '', driveFiles: [], driveSeen: {}, driveSynced: '' });
 let S = blank();
 try { const raw = localStorage.getItem(KEY); if (raw) S = Object.assign(blank(), JSON.parse(raw)); } catch(e) {}
 const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e) {} };
@@ -401,6 +409,33 @@ function parseAvregning(lines, fileName) {
   return r;
 }
 
+function parseFaktura(lines, fileName) {
+  const t = lines.join('\n');
+  const L = re => lines.find(l => re.test(l)) || '';
+  const last = l => { const n = nums(l); return n.length ? n[n.length - 1] : 0; };
+  const kredit = /kreditnota/i.test(t);
+  const sign = kredit ? -1 : 1;
+  const linjer = section(lines, /^\s*Material\b|Betegnelse/i, /Sum faktura|Beløp ekskl/i)
+    .map(l => { const m = l.match(/^\s*\d+\s+(.+?)\s{2,}/); const n = nums(l); return m && n.length ? { navn: m[1].trim(), belop: sign * n[n.length - 1] } : null; }).filter(Boolean);
+  const eks = last(L(/Beløp ekskl\.? ?mva/i)), mva = last(L(/^\s*Mva:/i)), total = last(L(/Beløp å betale|Å betale|Fakturabeløp/i)) || eks + mva;
+  const ord = t.match(/Ordre:\s*\d+\s*\/\s*(\d+)/);
+  const nr = after(t, /Fakturanr[.:]?\s*(\d+)/) || after(t, /Kreditnota(?:nr)?[.:]?\s*(\d+)/);
+  const firma = after(t, /^\s*([A-ZÆØÅ][\wÆØÅæøå .\-]*?\b(?:SA|AS|BA|ASA))\b/m) || 'Ukjent';
+  const motregn = /trukket i .*(virkes|tømmer)oppgjør|motregn/i.test(t);
+  const skogord = /felling|rydding|hogst|planting|planter|ungskog|skogsvei|vei|sporskad|kjøring|lassbær|skogkultur|markbered|gjødsl|grøft/i;
+  return {
+    id: 'f-' + firma.replace(/\W/g, '') + '-' + (nr || Date.now()), fil: fileName, nr, firma, kredit,
+    dato: after(t, /Fakturadato:\s*(\d{2}\.\d{2}\.\d{4})/) || after(t, /(\d{2}\.\d{2}\.\d{4})/),
+    forfall: after(t, /Forfallsdato:\s*(\d{2}\.\d{2}\.\d{4})/),
+    avtale: ord ? ord[1] : '',
+    eks: sign * eks, mva: sign * mva, total: sign * total, linjer,
+    tekst: lines.filter(l => /^\s{0,3}[A-ZÆØÅ][a-zæøå]/.test(l) && !/Denne faktura|Eventuelt|Betalingen|Bank|Swift|IBAN/i.test(l) && !nums(l).length).map(l => l.trim()).filter(x => x.length > 3 && !/Klevar|AKKERHAUGEN|Klevarsida/i.test(x)).slice(0, 2).join(' '),
+    motregnAuto: motregn,
+    fradragAuto: /viken skog|skog/i.test(firma) || linjer.some(x => skogord.test(x.navn)),
+    ok: !!(nr && total)
+  };
+}
+
 function parseMaaledok(lines, fileName) {
   const t = lines.join('\n');
   const sums = lines.filter(l => /^\s*Sum inkl\. vrak/.test(l)).map(l => { const n = nums(l); return n[n.length-1]; });
@@ -442,6 +477,14 @@ async function processPdf(name, buf, drive) {
       dup >= 0 ? S.maaledok[dup] = m : S.maaledok.push(m);
       return { kind: 'maaledok', msg: (m.ok ? '✓ ' : '⚠ ') + name + ': måledokument ' + m.nr + (dup >= 0 ? ' (oppdatert)' : '') };
     }
+    if (/\bFaktura\b|Kreditnota/i.test(t) && /Beløp å betale|Fakturanr|Kreditnota/i.test(t)) {
+      const f = parseFaktura(lines, name);
+      if (drive) { f.driveId = drive.id; f.link = drive.link; }
+      S.fakturaer = S.fakturaer || [];
+      const dup = S.fakturaer.findIndex(x => x.id === f.id);
+      if (dup >= 0) { f.mot = S.fakturaer[dup].mot; f.frad = S.fakturaer[dup].frad; S.fakturaer[dup] = f; } else S.fakturaer.push(f);
+      return { kind: 'faktura', msg: (f.ok ? '✓ ' : '⚠ ') + name + ': faktura ' + f.nr + ' (' + kr(f.total, 2) + ')' + (dup >= 0 ? ' (oppdatert)' : '') };
+    }
     return { kind: 'annet', msg: '– ' + name + ': ikke virkesavregning/måledokument (vises i arkivet)' };
   } catch (e) {
     return { kind: 'feil', msg: '✗ ' + name + ': kunne ikke leses (' + e.message + ')' };
@@ -461,7 +504,7 @@ async function handleFiles(files) {
 
 /* ---------- Google Disk ---------- */
 const CONFIG = { googleClientId: '1709168763-kl52fd3ibkmmj09qnob47hdo8alcbvn5.apps.googleusercontent.com' };   // fylles inn når klient-ID-en er klar
-const PARSER_V = 4;
+const PARSER_V = 5;
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 let gToken = null, gTokenClient = null, gBusy = false;
 const clientId = () => (CONFIG.googleClientId || S.gClientId || '').trim();
@@ -514,6 +557,7 @@ async function gSync() {
     const ids = new Set(S.driveFiles.map(f => f.id));
     S.avregninger = S.avregninger.filter(a => !a.driveId || ids.has(a.driveId));
     S.maaledok = S.maaledok.filter(m => !m.driveId || ids.has(m.driveId));
+    S.fakturaer = (S.fakturaer || []).filter(m => !m.driveId || ids.has(m.driveId));
     S.driveSeen = S.driveSeen || {};
     Object.keys(S.driveSeen).forEach(id => { if (!ids.has(id)) delete S.driveSeen[id]; });
     const todo = S.driveFiles.filter(f => f.pdf && (S.driveSeen[f.id]?.modified !== f.modified || (S.driveSeen[f.id]?.v || 1) < PARSER_V));
@@ -556,7 +600,7 @@ function gLogin() {
 
 function renderOverview() {
   const c = compute(), T = c.ps;
-  const mot = num(S.motregnet);
+  const mot = c.FS.har ? c.FS.paidMot : num(S.motregnet);
   const bar = (skatt, fritt) => { const tot = Math.max(0, skatt) + Math.max(0, fritt);
     if (tot <= 0) return '';
     const a = Math.max(0, skatt) / tot * 100, b = Math.max(0, fritt) / tot * 100;
@@ -574,6 +618,13 @@ function renderOverview() {
   const paidCash = c.utbetalt - mot;
   const paidSkatt = c.rest, paidMva = c.kap ? 0 : c.mva;
   $('ovMot').hidden = !n;
+  $('ovMotManual').hidden = c.FS.har;
+  $('ovMotFakt').hidden = !c.FS.har;
+  if (c.FS.har) {
+    const fl = c.FS.list;
+    $('ovMotFakt').innerHTML = '<strong>Fakturaer ' + S.year + '</strong>' + fl.map(f => `<div class="kv" style="font-size:.85rem;margin-top:4px"><span>${esc(f.linjer.map(x => x.navn).join(', ') || 'Faktura ' + f.nr)}<br><span class="hint">${f._mot ? (f._avr ? 'trukket i utbetaling av avregning ' + esc(f._avr) : 'trekkes i neste avregning') : 'ikke motregnet'}${f._frad ? ' · gir fradrag' : ''}</span></span><span class="n">${kr(f.total)}</span></div>`).join('') +
+      '<p class="hint" style="margin:6px 0 0">Endre i tabellen under «Fakturaer» til venstre.</p>';
+  }
   if (document.activeElement !== $('motregnet2')) $('motregnet2').value = S.motregnet || '';
   $('motFradrag').checked = !!S.motFradrag;
   $('ovPaid').innerHTML = n
@@ -583,9 +634,9 @@ function renderOverview() {
   let nextCash = 0, nextSkatt = 0, nextMva = 0;
   if (T) {
     const grunnlag = c.kap ? T.grunnlagKap : T.grunnlagNaering;
-    nextCash = T.utbetaling; nextSkatt = Math.max(0, grunnlag) * c.marg; nextMva = c.kap ? 0 : T.bruttoMva - T.kostMva;
+    nextCash = T.utbetaling - c.FS.nextMot; nextSkatt = Math.max(0, grunnlag - c.FS.nextFrad) * c.marg; nextMva = c.kap ? 0 : T.bruttoMva - T.kostMva;
     $('ovNext').innerHTML = blk('2. Forventet ved kommende avregninger',
-      `${fmt(T.vol, 0)} m³ innmålt, ikke avregnet` + (T.ekstra ? ` (inkl. ${fmt(T.ekstra, 0)} m³ hogd, ikke innmålt)` : '') + ' · anslag', nextCash, 'Forventet inn på bankkonto', nextSkatt, nextMva, T.skogfond);
+      `${fmt(T.vol, 0)} m³ innmålt, ikke avregnet` + (T.ekstra ? ` (inkl. ${fmt(T.ekstra, 0)} m³ hogd, ikke innmålt)` : '') + (c.FS.nextMot ? ` · ${kr(c.FS.nextMot)} i fakturaer trekkes` : '') + ' · anslag', nextCash, 'Forventet inn på bankkonto', nextSkatt, nextMva, T.skogfond);
   } else $('ovNext').innerHTML = '<h3>2. Forventet ved kommende avregninger</h3><div class="sub">Last opp målebrev for å få et anslag.</div>';
   // 3) Totalt
   const totCash = (n ? paidCash : 0) + nextCash, totSkatt = (n ? paidSkatt : 0) + nextSkatt, totMva = (n ? paidMva : 0) + nextMva;
@@ -642,7 +693,7 @@ function renderArchive() {
     cats.map(c => `<option value="${esc(c)}">${'\u00a0\u00a0'.repeat(c.split(' / ').length - 1)}${esc(c.split(' / ').pop())} (${files.filter(f => inCat(f, c)).length})</option>`).join('');
   sel.value = cats.includes(cur) ? cur : '';
   const q = $('arcQ').value.trim().toLowerCase();
-  const kindTag = { avregning: '<span class="tag">avregning lest</span>', maaledok: '<span class="tag">måledok. lest</span>', feil: '<span class="tag warn">kunne ikke leses</span>' };
+  const kindTag = { avregning: '<span class="tag">avregning lest</span>', maaledok: '<span class="tag">måledok. lest</span>', feil: '<span class="tag warn">kunne ikke leses</span>', faktura: '<span class="tag">faktura lest</span>' };
   const list = files.filter(f => (!sel.value || inCat(f, sel.value)) && (!q || (f.name + ' ' + f.path.join(' ')).toLowerCase().includes(q)))
     .sort((a, b) => a.path.join('/').localeCompare(b.path.join('/')) || b.modified.localeCompare(a.modified));
   $('arcTable').innerHTML = `<tr><th>Fil</th><th>Mappe</th><th>Endret</th><th></th></tr>` + (list.map(f => `<tr>
@@ -654,6 +705,28 @@ function renderArchive() {
 
 /* ---------- Skatt ---------- */
 const yearOf = d => +(d || '').slice(-4);
+const dnum = d => (d || '').split('.').reverse().join('');
+
+// Fordeler fakturaene: motregnet i en utbetalt avregning, eller trekkes i neste avregning
+function fakturaStatus() {
+  const kap = S.mode === 'kapital';
+  const R = { list: [], paidMot: 0, paidFrad: 0, nextMot: 0, nextFrad: 0, har: false };
+  const fs = (S.fakturaer || []).filter(f => yearOf(f.dato) === +S.year);
+  const avr = S.avregninger.filter(a => a.med && yearOf(a.dato) === +S.year).sort((a, b) => dnum(a.forfall || a.dato).localeCompare(dnum(b.forfall || b.dato)));
+  for (const f of fs) {
+    const mot = f.mot !== undefined ? f.mot : f.motregnAuto;
+    const frad = f.frad !== undefined ? f.frad : f.fradragAuto;
+    let i = null;
+    if (mot) i = avr.find(a => (!f.avtale || !a.avtale || a.avtale === f.avtale) && dnum(a.forfall || a.dato) >= dnum(f.dato)) || null;
+    const fbel = kap ? f.total : f.eks;
+    if (mot && i) { R.paidMot += f.total; if (frad) R.paidFrad += fbel; }
+    else if (mot) { R.nextMot += f.total; if (frad) R.nextFrad += fbel; }
+    else if (frad) R.paidFrad += fbel;
+    R.list.push(Object.assign({}, f, { _mot: mot, _frad: frad, _avr: i ? i.nr : null, _avrForfall: i ? (i.forfall || i.dato) : null }));
+  }
+  R.har = fs.length > 0;
+  return R;
+}
 
 function compute() {
   const R = RATES[S.year] || RATES[YEARS[YEARS.length-1]];
@@ -665,7 +738,8 @@ function compute() {
   const trekk = kap ? sum(x => x.trekkEks + x.trekkMva) : sum('trekkEks');
   const sf = sum('skogfond');
   const mInn = S.manual.filter(m => m.type === 'inntekt').reduce((a, m) => a + num(m.belop), 0);
-  const mKost = S.manual.filter(m => m.type === 'kostnad').reduce((a, m) => a + num(m.belop), 0) + (S.motFradrag ? num(S.motregnet) : 0);
+  const FS = fakturaStatus();
+  const mKost = S.manual.filter(m => m.type === 'kostnad').reduce((a, m) => a + num(m.belop), 0) + (FS.har ? FS.paidFrad : (S.motFradrag ? num(S.motregnet) : 0));
   const sfSkattbar = num(S.sfBrukt) * 0.15;
 
   // prognose for levert, ikke avregnet
@@ -682,7 +756,7 @@ function compute() {
   const rest = Math.max(0, skatt - num(S.betalt));
   const mva = kap ? 0 : sum('nettoMva');
   const utbetalt = sum('utbetalt');
-  return { R, kap, av, inn, utg, trekk, sf, mInn, mKost, sfSkattbar, prog, ps, progNetto, skogNetto,
+  return { R, kap, av, inn, utg, trekk, sf, mInn, mKost, sfSkattbar, prog, ps, progNetto, skogNetto, FS,
     del, skatt, rest, mva, utbetalt, marg: R.alm + trinnSats + (kap ? 0 : R.tNaering) };
 }
 
@@ -839,6 +913,21 @@ function render() {
       <td><button class="x" data-delmd="${m.id}" title="Fjern">✕</button></td></tr>`).join('')
     : '<tr><td class="hint">Ingen ennå.</td></tr>';
 
+  // fakturaer
+  const FSr = fakturaStatus();
+  const fl = [...(S.fakturaer || [])].sort((a, b) => dnum(a.dato).localeCompare(dnum(b.dato)));
+  $('fTable').innerHTML = fl.length ? `<tr><th>Dato</th><th>Faktura</th><th>Gjelder</th><th class="n">Inkl. mva</th><th>Motregnet</th><th>Fradrag</th><th></th></tr>` +
+    fl.map(f => { const st = FSr.list.find(x => x.id === f.id) || {}; const mot = f.mot !== undefined ? f.mot : f.motregnAuto; const frad = f.frad !== undefined ? f.frad : f.fradragAuto;
+      return `<tr><td>${esc(f.dato)}${yearOf(f.dato) !== +S.year ? ' <span class="tag warn">' + yearOf(f.dato) + '</span>' : ''}</td>
+      <td>${f.link ? `<a href="${esc(f.link)}" target="_blank" rel="noopener">${esc(f.nr)}</a>` : esc(f.nr)}<br><span class="hint">${esc(f.firma)}</span></td>
+      <td>${esc(f.linjer.map(x => x.navn).join(', ') || f.tekst || '–')}</td>
+      <td class="n">${fmt(f.total, 2)}</td>
+      <td><input type="checkbox" data-fmot="${esc(f.id)}" ${mot ? 'checked' : ''}> <span class="hint">${mot ? (st._avr ? 'i avr. ' + esc(st._avr) : 'neste avr.') : ''}</span></td>
+      <td><input type="checkbox" data-ffrad="${esc(f.id)}" ${frad ? 'checked' : ''}></td>
+      <td><button class="x" data-delf="${esc(f.id)}" title="Fjern">✕</button></td></tr>`; }).join('')
+    : '<tr><td class="hint">Ingen ennå. Legg fakturaer i Fakturaer-mappen eller slipp PDF-ene over.</td></tr>';
+  $('fHint').textContent = fl.length ? '«Motregnet» = trukket fra en utbetaling i stedet for betalt separat (huket av automatisk når fakturaen sier det). «Fradrag» = skogkostnad som gir fradrag i skatten. Kontroller begge.' : '';
+
   // manuelle poster
   $('manual').innerHTML = S.manual.map((m, i) => `<div class="manual-row">
       <select data-mi="${i}" data-mf="type"><option value="kostnad" ${m.type==='kostnad'?'selected':''}>Kostnad</option><option value="inntekt" ${m.type==='inntekt'?'selected':''}>Inntekt</option></select>
@@ -873,7 +962,7 @@ function render() {
   $('mvaCard').hidden = c.kap;
   $('mvaBig').textContent = kr(c.mva);
 
-  const mot = num(S.motregnet);
+  const mot = c.FS.har ? c.FS.paidMot : num(S.motregnet);
   const tilKonto = c.utbetalt - mot;
   $('payRows').innerHTML = c.av.length ? rows([
     ['Virkesoppgjør (utbetalt fra kjøper)', kr(c.utbetalt, 2)],
@@ -937,6 +1026,7 @@ drop.addEventListener('drop', e => handleFiles([...e.dataTransfer.files].filter(
 
 document.addEventListener('change', e => {
   const t = e.target;
+  if (t.dataset.fmot || t.dataset.ffrad) { const f = (S.fakturaer || []).find(x => x.id === (t.dataset.fmot || t.dataset.ffrad)); if (f) { if (t.dataset.fmot) f.mot = t.checked; else f.frad = t.checked; } persist(); render(); return; }
   if (t.dataset.med) { const a = S.avregninger.find(x => x.id === t.dataset.med); if (a) a.med = t.checked; persist(); render(); }
   if (t.dataset.mi && t.tagName === 'SELECT') { S.manual[+t.dataset.mi][t.dataset.mf] = t.value; persist(); render(); }
 });
@@ -948,6 +1038,7 @@ document.addEventListener('input', e => {
 document.addEventListener('click', e => {
   const t = e.target.closest('button'); if (!t) return;
   if (t.dataset.delav) { S.avregninger = S.avregninger.filter(x => x.id !== t.dataset.delav); persist(); render(); }
+  if (t.dataset.delf) { S.fakturaer = (S.fakturaer || []).filter(x => x.id !== t.dataset.delf); persist(); render(); }
   if (t.dataset.delmd) { S.maaledok = S.maaledok.filter(x => x.id !== t.dataset.delmd); persist(); render(); }
   if (t.dataset.mdel) { S.manual.splice(+t.dataset.mdel, 1); persist(); render(); }
 });
