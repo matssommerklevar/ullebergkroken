@@ -210,7 +210,7 @@
         <div>
           <label for="motregnet">Motregnet i utbetaling, f.eks. faktura (kr)</label>
           <input id="motregnet" inputmode="decimal" placeholder="0">
-          <p class="hint">Påvirker bare hva som kom inn på konto, ikke skatten. Fradrag føres som post over.</p>
+          <p class="hint">Samme felt som i oversikten øverst til høyre. Huk av der hvis fakturaen gir fradrag.</p>
         </div>
       </div>
     </section>
@@ -231,6 +231,13 @@
     <div class="card ov" id="ovCard">
       <h2>Skatt å sette av <small id="yrLbl"></small></h2>
       <div class="blk" id="ovPaid"></div>
+      <div id="ovMot" style="margin:-4px 0 4px;padding:10px 12px;background:var(--bg);border-radius:8px">
+        <label for="motregnet2" style="margin-bottom:4px">Motregnet faktura (trukket fra utbetalingen, kr)</label>
+        <input id="motregnet2" inputmode="decimal" placeholder="0" style="background:var(--card)">
+        <label style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;color:var(--fg);font-size:.85rem">
+          <input type="checkbox" id="motFradrag" style="margin-top:3px"> Fakturaen gjelder en skogkostnad som ikke står på avregningen (f.eks. planting, skogsvei, ekstra hogst) – gir fradrag
+        </label>
+      </div>
       <div class="blk" id="ovNext"></div>
       <div class="blk tot" id="ovTot"></div>
       <p class="hint" style="margin-top:12px"><span class="sw" style="background:var(--c-skatt)"></span>Sett av til skatt &nbsp; <span class="sw" style="background:var(--c-fritt)"></span>Fritt å bruke</p>
@@ -561,11 +568,14 @@ function renderOverview() {
       <span><span class="sw" style="background:var(--c-skatt)"></span>Sett av til skatt</span><span class="n"><strong>${kr(skatt)}</strong></span>
       ${ekstra ? `<span>Sett av til mva</span><span class="n">${kr(ekstra)}</span>` : ''}
       <span><span class="sw" style="background:var(--c-fritt)"></span>Fritt å bruke</span><span class="n">${kr(cash - skatt - (ekstra || 0))}</span></div>` +
-    (sf ? `<div class="sub" style="margin:6px 0 0">I tillegg går ${kr(sf)} til skogfondskontoen (trukket før utbetaling, ikke skatt nå).</div>` : '');
+    (sf ? `<div class="sub" style="margin:6px 0 0">I tillegg går ${kr(sf)} til skogfondskontoen. Det beløpet er trukket fra i skatteberegningen – det skattes først når pengene tas ut (15 % ved bruk til godkjente tiltak).</div>` : '');
   // 1) Utbetalt
   const n = c.av.length;
   const paidCash = c.utbetalt - mot;
   const paidSkatt = c.rest, paidMva = c.kap ? 0 : c.mva;
+  $('ovMot').hidden = !n;
+  if (document.activeElement !== $('motregnet2')) $('motregnet2').value = S.motregnet || '';
+  $('motFradrag').checked = !!S.motFradrag;
   $('ovPaid').innerHTML = n
     ? blk('1. Allerede utbetalt', `${n} avregning${n > 1 ? 'er' : ''} i ${S.year}` + (mot ? ` · motregnet ${kr(mot)}` : '') + (num(S.betalt) ? ` · ${kr(num(S.betalt))} allerede satt av` : ''), paidCash, 'Inn på bankkonto', paidSkatt, paidMva, c.sf)
     : '<h3>1. Allerede utbetalt</h3><div class="sub">Ingen avregninger i ' + S.year + ' ennå.</div>';
@@ -655,7 +665,7 @@ function compute() {
   const trekk = kap ? sum(x => x.trekkEks + x.trekkMva) : sum('trekkEks');
   const sf = sum('skogfond');
   const mInn = S.manual.filter(m => m.type === 'inntekt').reduce((a, m) => a + num(m.belop), 0);
-  const mKost = S.manual.filter(m => m.type === 'kostnad').reduce((a, m) => a + num(m.belop), 0);
+  const mKost = S.manual.filter(m => m.type === 'kostnad').reduce((a, m) => a + num(m.belop), 0) + (S.motFradrag ? num(S.motregnet) : 0);
   const sfSkattbar = num(S.sfBrukt) * 0.15;
 
   // prognose for levert, ikke avregnet
@@ -850,7 +860,7 @@ function render() {
     ['Avgifter (FoU, næringspolitisk)', '−' + kr(c.trekk)],
     ['Avsatt til skogfond', '−' + kr(c.sf)],
     c.mInn ? ['Andre inntekter', kr(c.mInn)] : null,
-    c.mKost ? ['Andre kostnader', '−' + kr(c.mKost)] : null,
+    c.mKost ? ['Andre kostnader' + (S.motFradrag && num(S.motregnet) ? ' (inkl. motregnet faktura)' : ''), '−' + kr(c.mKost)] : null,
     c.sfSkattbar ? ['Skattepliktig del av brukt skogfond (15 %)', kr(c.sfSkattbar)] : null,
     c.progNetto ? ['Anslag levert, ikke avregnet', kr(c.progNetto)] : null,
     ['Skattepliktig overskudd skog', kr(c.skogNetto), 'sum'],
@@ -942,6 +952,8 @@ document.addEventListener('click', e => {
   if (t.dataset.mdel) { S.manual.splice(+t.dataset.mdel, 1); persist(); render(); }
 });
 $('gLogin').addEventListener('click', gLogin);
+$('motregnet2').addEventListener('input', e => { S.motregnet = e.target.value; persist(); render(); });
+$('motFradrag').addEventListener('change', e => { S.motFradrag = e.target.checked; persist(); render(); });
 $('gSync').addEventListener('click', gSync);
 $('gFolder').addEventListener('input', e => { S.gFolder = e.target.value; persist(); });
 $('gClient').addEventListener('input', e => { S.gClientId = e.target.value.trim(); persist(); });
