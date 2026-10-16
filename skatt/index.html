@@ -63,6 +63,21 @@
   details summary { cursor:pointer; color:var(--muted); font-size:.88rem; }
   .manual-row { display:grid; grid-template-columns: 110px 1fr 130px 120px 28px; gap:6px; margin-bottom:6px; }
   @media (max-width: 600px) { .manual-row { grid-template-columns: 1fr 1fr; } }
+  :root { --c-skatt:#eb6834; --c-fritt:#1baf7a; }
+  @media (prefers-color-scheme: dark) { :root { --c-skatt:#d95926; --c-fritt:#199e70; } }
+  .ov h3 { margin:0; font-size:.95rem; }
+  .ov .blk { padding:14px 0; border-bottom:1px solid var(--line); }
+  .ov .blk:last-child { border-bottom:none; padding-bottom:0; }
+  .ov .blk:first-of-type { padding-top:4px; }
+  .ov .sub { color:var(--muted); font-size:.8rem; margin:2px 0 10px; }
+  .ov .bar { display:flex; gap:2px; height:14px; margin:8px 0 8px; }
+  .ov .bar span { display:block; height:100%; min-width:2px; }
+  .ov .bar span:first-child { border-radius:4px 0 0 4px; } .ov .bar span:last-child { border-radius:0 4px 4px 0; }
+  .ov .bar span:only-child { border-radius:4px; }
+  .ov .kv { display:grid; grid-template-columns: 1fr auto; gap:3px 12px; font-size:.9rem; }
+  .ov .kv .n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .ov .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px; }
+  .ov .tot .kv { font-size:1rem; } .ov .tot .big { font-size:1.9rem; }
   .drivebox { background:var(--accent-soft); border-radius:var(--radius); padding:14px; }
   .drivebox input { background:var(--card); }
   footer { max-width:1180px; margin:0 auto; padding:8px 16px 40px; color:var(--muted); font-size:.82rem; }
@@ -213,18 +228,25 @@
   </div>
 
   <aside>
-    <div class="card">
-      <h2>Sett av til skatt <small id="yrLbl"></small></h2>
-      <div class="big" id="settAv">–</div>
-      <div class="hint" id="settAvSub"></div>
-      <div class="rows" id="resRows" style="margin-top:12px"></div>
+    <div class="card ov" id="ovCard">
+      <h2>Skatt å sette av <small id="yrLbl"></small></h2>
+      <div class="blk" id="ovPaid"></div>
+      <div class="blk" id="ovNext"></div>
+      <div class="blk tot" id="ovTot"></div>
+      <p class="hint" style="margin-top:12px"><span class="sw" style="background:var(--c-skatt)"></span>Sett av til skatt &nbsp; <span class="sw" style="background:var(--c-fritt)"></span>Fritt å bruke</p>
     </div>
+    <details class="card">
+      <summary><strong>Slik er skatten på utbetalt beløp regnet</strong></summary>
+      <div class="big" id="settAv" hidden></div>
+      <div class="hint" id="settAvSub" style="margin-top:10px"></div>
+      <div class="rows" id="resRows" style="margin-top:12px"></div>
+    </details>
     <div class="card" id="mvaCard" hidden>
       <h2>Mva å betale</h2>
       <div class="big" id="mvaBig">–</div>
       <div class="hint">Netto mva fra avregningene skal betales inn i mva-meldingen. Fradrag for mva på andre kjøp reduserer beløpet.</div>
     </div>
-    <div class="card">
+    <div class="card" style="display:none">
       <h2>Utbetalinger</h2>
       <div class="rows" id="payRows"></div>
     </div>
@@ -232,11 +254,11 @@
       <h2>Skogfond</h2>
       <div class="rows" id="sfRows"></div>
     </div>
-    <div class="card" id="progCard" hidden>
+    <div class="card" id="progCard" hidden style="display:none">
       <h2>Levert, men ikke avregnet</h2>
       <div class="rows" id="progRows"></div>
       <label style="display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--fg)">
-        <input type="checkbox" id="inclProg"> Ta med anslaget i skatten over
+        <input type="checkbox" id="inclProg" hidden>
       </label>
     </div>
   </aside>
@@ -525,6 +547,42 @@ function gLogin() {
   gTokenClient.requestAccessToken();
 }
 
+function renderOverview() {
+  const c = compute(), T = c.ps;
+  const mot = num(S.motregnet);
+  const bar = (skatt, fritt) => { const tot = Math.max(0, skatt) + Math.max(0, fritt);
+    if (tot <= 0) return '';
+    const a = Math.max(0, skatt) / tot * 100, b = Math.max(0, fritt) / tot * 100;
+    return `<div class="bar" role="img" aria-label="${fmt(a, 0)} % skatt, ${fmt(b, 0)} % fritt">` +
+      (a > 0 ? `<span style="width:${a}%;background:var(--c-skatt)" title="Sett av til skatt: ${kr(skatt)}"></span>` : '') +
+      (b > 0 ? `<span style="width:${b}%;background:var(--c-fritt)" title="Fritt å bruke: ${kr(fritt)}"></span>` : '') + '</div>'; };
+  const blk = (tittel, sub, cash, cashLbl, skatt, ekstra) => `<h3>${tittel}</h3><div class="sub">${sub}</div>` + bar(skatt + (ekstra || 0), cash - skatt - (ekstra || 0)) +
+    `<div class="kv"><span>${cashLbl}</span><span class="n">${kr(cash)}</span>
+      <span><span class="sw" style="background:var(--c-skatt)"></span>Sett av til skatt</span><span class="n"><strong>${kr(skatt)}</strong></span>
+      ${ekstra ? `<span>Sett av til mva</span><span class="n">${kr(ekstra)}</span>` : ''}
+      <span><span class="sw" style="background:var(--c-fritt)"></span>Fritt å bruke</span><span class="n">${kr(cash - skatt - (ekstra || 0))}</span></div>`;
+  // 1) Utbetalt
+  const n = c.av.length;
+  const paidCash = c.utbetalt - mot;
+  const paidSkatt = c.rest, paidMva = c.kap ? 0 : c.mva;
+  $('ovPaid').innerHTML = n
+    ? blk('1. Allerede utbetalt', `${n} avregning${n > 1 ? 'er' : ''} i ${S.year}` + (mot ? ` · motregnet ${kr(mot)}` : '') + (num(S.betalt) ? ` · ${kr(num(S.betalt))} allerede satt av` : ''), paidCash, 'Inn på konto', paidSkatt, paidMva)
+    : '<h3>1. Allerede utbetalt</h3><div class="sub">Ingen avregninger i ' + S.year + ' ennå.</div>';
+  // 2) Forventet
+  let nextCash = 0, nextSkatt = 0, nextMva = 0;
+  if (T) {
+    const grunnlag = c.kap ? T.grunnlagKap : T.grunnlagNaering;
+    nextCash = T.utbetaling; nextSkatt = Math.max(0, grunnlag) * c.marg; nextMva = c.kap ? 0 : T.bruttoMva - T.kostMva;
+    $('ovNext').innerHTML = blk('2. Forventet ved kommende avregninger',
+      `${fmt(T.vol, 0)} m³ innmålt, ikke avregnet` + (T.ekstra ? ` (inkl. ${fmt(T.ekstra, 0)} m³ hogd, ikke innmålt)` : '') + ' · anslag', nextCash, 'Forventet inn på konto', nextSkatt, nextMva);
+  } else $('ovNext').innerHTML = '<h3>2. Forventet ved kommende avregninger</h3><div class="sub">Last opp målebrev for å få et anslag.</div>';
+  // 3) Totalt
+  const totCash = (n ? paidCash : 0) + nextCash, totSkatt = (n ? paidSkatt : 0) + nextSkatt, totMva = (n ? paidMva : 0) + nextMva;
+  $('ovTot').innerHTML = `<h3>Totalt for ${S.year}</h3><div class="sub">Utbetalt + forventet</div>` +
+    `<div class="big">${kr(totSkatt)}</div><div class="sub" style="margin-top:0">å sette av til skatt${totMva ? ' + ' + kr(totMva) + ' mva' : ''}</div>` + bar(totSkatt + totMva, totCash - totSkatt - totMva) +
+    `<div class="kv"><span>Inn på konto totalt</span><span class="n">${kr(totCash)}</span><span>Fritt å bruke totalt</span><span class="n">${kr(totCash - totSkatt - totMva)}</span></div>`;
+}
+
 function renderForecast() {
   const c = compute(), T = c.ps;
   $('fcSection').hidden = !T;
@@ -602,7 +660,7 @@ function compute() {
   // prognose for levert, ikke avregnet
   const prog = prognose();
   const ps = prognoseSort();
-  const progNetto = !S.inclProg ? 0 : ps ? (kap ? ps.grunnlagKap : ps.grunnlagNaering) : prog ? (kap ? prog.nettoInkl : prog.nettoEks) : 0;
+  const progNetto = true ? 0 : ps ? (kap ? ps.grunnlagKap : ps.grunnlagNaering) : prog ? (kap ? prog.nettoInkl : prog.nettoEks) : 0;
 
   const skogNetto = inn - utg - trekk - sf + mInn - mKost + sfSkattbar + progNetto;
   // Isolert marginalskatt på skogoverskuddet (øvrig inntekt antas å bruke opp fradragene)
@@ -740,6 +798,7 @@ function render() {
     gStatus('Sist hentet ' + new Date(S.driveSynced).toLocaleString('nb-NO', { dateStyle: 'short', timeStyle: 'short' }));
   renderArchive();
   renderForecast();
+  renderOverview();
   const kap = S.mode === 'kapital';
   $('modeHint').textContent = kap
     ? 'Kapitalskog: netto overskudd beskattes som kapitalinntekt (22 %). Mva på tømmeroppgjøret regnes som inntekt, og mva på kostnader er med i fradraget. Ingen trygdeavgift eller trinnskatt på skoginntekten.'
